@@ -1,0 +1,932 @@
+---
+title: "Uber Ride Analytics in NCR India"
+format:
+  revealjs:
+    theme: simple
+    transition: fade
+    slide-number: true
+    chalkboard: false
+    center: false
+    preview-links: true
+editor: visual
+---
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+
+library(tidyverse)
+library(lubridate)
+library(igraph)
+library(visNetwork)
+library(grid)
+
+uber_data <- read_csv(
+"https://raw.githubusercontent.com/tlwong1/Data-Visualization-Project-1/refs/heads/main/Project%20Data/ncr_ride_bookings.csv"
+)
+
+```
+
+## Agenda
+
+-   Policy use case & motivation
+
+-   Data source & scope
+
+-   Findings from visualizations
+
+-   Interactive demo
+
+-   Key takeaways & next steps
+
+```{r}
+#“I’ll briefly frame the policy motivation, walk through key findings on pricing and reliability, and then demonstrate an interactive tool for targeted decision-making.”
+```
+
+## Policy use case
+
+Ride-hailing reliability and pricing transparency affect:
+
+-   Two focus areas:
+
+    -   Driver reliability and platform efficiency
+
+    -   Fairness perceptions (especially for short urban trips)
+
+```{r}
+#“Ride-hailing platforms operate at large scale, where even minor inefficiencies can affect thousands of daily trips.”
+
+#“From a policy and operations perspective, two issues matter most: pricing fairness for riders and reliability of service.”
+
+#“Together, reliability and fairness perceptions shape customer trust and retention
+
+
+
+#“This project asks whether short urban trips are systematically less cost-efficient, and whether cancellations cluster at specific times or locations.”
+```
+
+## Data source
+
+-   **Dataset:** Uber Ride Analytics Dashboard dataset (Kaggle)
+
+-   **Geography:** National Capital Region(NCR), India
+
+-   **Unit of analysis:** individual bookings
+
+-   **Key fields used:** Booking Status, Booking Value, Ride Distance, Time, Vehicle Type
+
+```{r}
+# “All figures are generated in R and can be reproduced from scratch using the attached code.”
+
+#“All analysis is based on a publicly available Uber ride-booking dataset from Kaggle.”
+
+#“The data covers individual bookings in India’s National Capital Region, a dense, high-volume urban market.”
+
+#“Each observation represents a single ride, allowing us to analyze patterns at the individual level
+
+#“The key variables used are booking status, Booking Value, ride distance, time of day, and vehicle type”
+```
+
+## Visualization 1: Price per Kilometer by Trip Distance
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+
+# Clean data and calculate price per km
+viz_data <- uber_data %>%
+  mutate(
+    booking_value = as.numeric(`Booking Value`),
+    ride_distance = as.numeric(`Ride Distance`)
+  ) %>%
+  filter(
+    !is.na(booking_value), 
+    !is.na(ride_distance),
+    booking_value > 50,      # Remove very low fares
+    booking_value < 3000,    # Remove extreme outliers
+    ride_distance > 0.5,     # Remove very short rides
+    ride_distance < 50,      # Focus on typical rides
+    `Booking Status` == "Completed"
+  ) %>%
+  mutate(
+    price_per_km = booking_value / ride_distance,
+    distance_category = cut(ride_distance, 
+                           breaks = c(0, 5, 10, 15, 20, 50),
+                           labels = c("0-5 km\n(Very Short)", 
+                                    "5-10 km\n(Short)", 
+                                    "10-15 km\n(Medium)", 
+                                    "15-20 km\n(Long)",
+                                    "20+ km\n(Very Long)"))
+  )
+
+# Create box plot showing price per km by distance category
+ggplot(viz_data, aes(x = distance_category, y = price_per_km, fill = distance_category)) +
+  geom_boxplot(outlier.alpha = 0.3, outlier.size = 0.5) +
+  
+  # Color scale
+  scale_fill_viridis_d(option = "C", guide = "none") +
+  
+  # Labels
+  labs(
+    title = "Uber Price Per Kilometer by Trip Distance",
+    subtitle = "Shorter trips cost significantly more per kilometer due to base fare minimums",
+    x = "Trip Distance Category",
+    y = "Price Per Kilometer (INR ₹/km)",
+    caption = paste0("Data: Uber NCR Bookings (Kaggle). Analyzing ", 
+                    format(nrow(viz_data), big.mark = ","), 
+                    " completed rides.\nBox shows median and quartiles; dots are outliers.")
+  ) +
+  
+  # Theme
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0, margin = margin(b = 5)),
+    plot.subtitle = element_text(size = 10, color = "gray30", hjust = 0, margin = margin(b = 15)),
+    plot.caption = element_text(size = 9, color = "gray50", hjust = 0, margin = margin(t = 10)),
+    axis.title.x = element_text(face = "bold", size = 12, margin = margin(t = 10)),
+    axis.title.y = element_text(face = "bold", size = 12, margin = margin(r = 10)),
+    axis.text.x = element_text(size = 11),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(20, 20, 20, 20)
+  ) +
+  
+  # Y-axis limits
+  coord_cartesian(ylim = c(0, 150))
+```
+
+```{r}
+#“This visualization examines pricing efficiency by calculating price per kilometer rather than total fare
+
+#“Trips are grouped into distance categories to compare how cost efficiency changes with length.”
+
+#“Very short trips under five kilometers are dramatically more expensive per kilometer than longer trips.”
+
+#“The median price for these trips exceeds ₹100(rupees) per kilometer, compared to roughly ₹20 per kilometer for trips over 20 kilometers.”
+
+#“This pattern likely occurs because base fare minimums dominate short trips, inflating per-kilometer costs.”
+
+#“Short trips also show much greater variability, likely driven by surge pricing and time-of-day effects.”
+
+#“As distance increases, pricing becomes both cheaper and more predictable.”
+```
+
+## Interpretation: Price vs Distance
+
+-   Fares generally increase with distance, but not strictly linearly
+
+-   Short trips show **greater pricing dispersion**
+
+-   Distance alone does not explain what riders pay, especially for short urban trips
+
+-   Perhaps base fare minimums / surges matter most for short urban rides
+
+```{r}
+#“Fares increase with distance, but not in a strictly linear way.”
+
+#“Distance alone does not explain what riders pay, especially for short urban trips
+
+#“Pricing efficiency improves substantially as trip length increases.”
+```
+
+## Visualization 2: Cancellation Rate by hour of day
+
+```{r}
+# Parse time and calculate cancellation rates by hour
+hourly_data <- uber_data %>%
+  mutate(
+    hour = hour(hms(Time))
+  ) %>%
+  group_by(hour) %>%
+  summarise(
+    total_rides = n(),
+    cancelled = sum(`Booking Status` %in% c("Cancelled by Customer", "Cancelled by Driver")),
+    cancellation_rate = (cancelled / total_rides) * 100,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    # Highlight morning and evening rush hours (7-9am, 5-7pm)
+    is_rush_hour = hour %in% c(7, 8, 17, 18),
+    hour_label = paste0(sprintf("%02d", hour), ":00")
+  )
+
+# Extract cancellation rates from the data
+morning_val <- hourly_data$cancellation_rate[hourly_data$hour == 8]
+evening_val <- hourly_data$cancellation_rate[hourly_data$hour == 18]
+
+# Create dynamic annotation text
+morning_text <- sprintf("Morning rush hour:\n%.1f%% cancellation rate", morning_val)
+evening_text <- sprintf("Evening rush hour:\n%.1f%% cancellation rate", evening_val)
+
+# Identify lowest and highest cancellation-rate points
+min_point <- hourly_data[which.min(hourly_data$cancellation_rate), ]
+max_point <- hourly_data[which.max(hourly_data$cancellation_rate), ]
+
+# Average cancellation rate across all hours
+avg_cancel <- mean(hourly_data$cancellation_rate, na.rm = TRUE)
+avg_label  <- sprintf("Daily avg: %.1f%%", avg_cancel)
+
+# Highlight the 14:00 (2pm) local peak
+peak14_point <- hourly_data %>%
+  filter(hour == 14)
+
+peak14_text <- sprintf(
+  "2pm local peak:\n%.1f%% at 14:00",
+  peak14_point$cancellation_rate
+)
+
+# Create focused visualization
+ggplot(hourly_data, aes(x = hour, y = cancellation_rate)) +
+  
+  # Background shading for rush periods
+  annotate("rect", xmin = 7, xmax = 9, ymin = -Inf, ymax = Inf,
+           alpha = 0.08, fill = "#E69F00") +
+  annotate("rect", xmin = 17, xmax = 18, ymin = -Inf, ymax = Inf,
+           alpha = 0.08, fill = "#E69F00") +
+  
+    # Average cancellation rate line (dashed)
+  geom_hline(yintercept = avg_cancel, linetype = "dashed",
+             linewidth = 0.9, color = "gray40") +
+
+  
+  # Base line
+  geom_line(color = "gray60", linewidth = 1.2) +
+  
+  # Points
+  geom_point(aes(color = is_rush_hour), size = 4) +
+  
+    # Highlight 2pm (14:00) local peak
+  geom_point(
+    data = peak14_point,
+    aes(x = hour, y = cancellation_rate),
+    color = "#009E73", size = 5, shape = 21, fill = "#009E73"
+  ) +
+  geom_text(
+    data = peak14_point,
+    aes(
+      x = hour,
+      y = cancellation_rate + 1.3,
+      label = peak14_text
+    ),
+    color = "#009E73",
+    fontface = "bold",
+    size = 3.4,
+    hjust = 0.5
+  ) +
+
+  
+  # Highlight highest point (peak)
+geom_point(data = max_point,
+           aes(x = hour, y = cancellation_rate),
+           color = "#D55E00", size = 5, shape = 21, fill = "#D55E00") +
+
+geom_text(data = max_point,
+          aes(x = hour, y = cancellation_rate + 1.5,
+              label = sprintf("Highest point:\n%.1f%% at %02d:00",
+                              cancellation_rate, hour)),
+          color = "#D55E00", fontface = "bold", size = 3.5, hjust = 0.5) +
+
+# Highlight lowest point (trough)
+geom_point(data = min_point,
+           aes(x = hour, y = cancellation_rate),
+           color = "#0072B2", size = 5, shape = 21, fill = "#0072B2") +
+
+geom_text(data = min_point,
+          aes(x = hour, y = cancellation_rate - 1,
+              label = sprintf("Lowest point:\n%.1f%% at %02d:00",
+                              cancellation_rate, hour)),
+          color = "#0072B2", fontface = "bold", size = 3.5, hjust = 0.5) +
+
+  
+  # Hour labels on highlighted points
+  geom_text(
+    data = subset(hourly_data, is_rush_hour),
+    aes(label = sprintf("%02d:00", hour)),
+    vjust = -1.2,
+    size = 3,
+    color = "#E69F00",
+    fontface = "bold"
+  ) +
+  
+  # MORNING ANNOTATION 
+  annotate("curve",
+           x = 9.7, xend = 8,
+           y = morning_val + 4.2,
+           yend = morning_val + 1,
+           curvature = 0.3,
+           arrow = arrow(length = unit(0.3, "cm")),
+           color = "#E69F00", linewidth = 1) +
+  annotate("text",
+           x = 10, y = morning_val + 4.2,
+           label = morning_text,
+           hjust = 0,
+           size = 3.8,
+           color = "#E69F00",
+           fontface = "bold") +
+  
+  # EVENING ANNOTATION
+  annotate("curve",
+           x = 15, xend = 18,
+           y = evening_val - 2.8,
+           yend = evening_val - 0.5,
+           curvature = 0.3,
+           arrow = arrow(length = unit(0.3, "cm")),
+           color = "#E69F00", linewidth = 1) +
+  annotate("text",
+           x = 8.5, y = evening_val - 3,
+           label = evening_text,
+           hjust = 0,
+           size = 3.8,
+           color = "#E69F00",
+           fontface = "bold") +
+  
+  # Colors
+  scale_color_manual(
+    values = c("FALSE" = "gray60", "TRUE" = "#E69F00"),
+    guide = "none"
+  ) +
+  
+  # Labels
+  labs(
+    title = "Uber Cancellation Rates Peak During Rush Hours",
+    subtitle = str_wrap(
+      "Cancellation rates are highest at 5am, suggesting driver shortage during peak commute times",
+      width = 70
+    ),
+    x = "Hour of Day",
+    y = "Cancellation Rate (%)",
+    caption = "Data: Uber Ride Bookings, NCR India (Kaggle). Color palette: Okabe-Ito (CVD-safe)."
+  ) +
+  
+  # Theme
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0),
+    plot.subtitle = element_text(size = 11, color = "gray30", hjust = 0, margin = margin(b = 15)),
+    axis.title = element_text(face = "bold", size = 12),
+    axis.text = element_text(size = 11),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.3)
+  ) +
+  
+  scale_x_continuous(
+    breaks = seq(0, 23, 3),
+    labels = paste0(sprintf("%02d", seq(0, 23, 3)), ":00")
+  ) +
+  scale_y_continuous(
+    breaks = seq(20, 30, 2),
+    limits = c(20, 31)
+  )
+```
+
+```{r}
+#“This visualization shifts from pricing to reliability, focusing on when cancellations occur throughout the day.”
+
+#“Cancellation rates remain relatively stable, fluctuating within a narrow five-percentage-point range.”
+
+#“This stability indicates a generally resilient system rather than widespread breakdown.”
+
+#“The highest cancellation rate occurs early in the morning around 5:00 AM, while the lowest occurs overnight.”
+
+#“Morning and evening commute periods show a modest cancellations rate.”
+
+#There is another peak at about 14:00 or 2pm
+```
+
+## Cancellation Rates Interpretation
+
+-   **Cancellation rates are stable overall** (within \~5 percentage points)
+
+<!-- -->
+
+-   **Highest point occurs early morning** (low supply effect)
+
+<!-- -->
+
+-   **Commute windows have an average rate**
+
+```{r}
+
+#Cancellation rates are predicable
+
+#Maybe the cancellation rate might do with supply issues at those times(5am, 2pm 14:00)
+```
+
+## Visualization 3: Peak Usage Hours
+
+```{r}
+# Filter for Auto rides and extract hour from Time
+auto_hourly <- uber_data %>%
+  filter(`Vehicle Type` == "Auto") %>%
+  mutate(hour = as.numeric(substr(Time, 1, 2))) %>%
+  count(hour) %>%
+  arrange(hour)
+
+# Create line/area chart showing peak hours
+ggplot(auto_hourly, aes(x = hour, y = n)) +
+  geom_area(fill = "skyblue", alpha = 0.6) +
+  geom_line(color = "#2E86AB", linewidth = 1.2) +
+  geom_point(color = "darkblue", size = 3) +
+  scale_x_continuous(breaks = seq(0, 23, 2), 
+                     labels = paste0(seq(0, 23, 2), ":00")) +
+  scale_y_continuous(breaks = seq(0, 3000, 500)) +
+  labs(
+    title = "Peak Usage Hours for Auto Rides",
+    subtitle = "Number of auto bookings by hour of day",
+    x = "Hour of Day",
+    y = "Number of Rides"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 11, color = "gray30"),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+```{r}
+#“This visualization shows when auto rides are most frequently requested.”
+
+#“Demand is very low overnight, then rises sharply beginning around 4:00 AM.”
+
+#“The first peak occurs in the late morning at 10, followed by a stronger peak around 6:00 PM.”
+
+#“The evening peak exceeds the morning peak, indicating heavier return-commute 
+
+#5am and 2pm(14:00) are right after the low points with 4am and 1pm(13:00) being the local minimum
+
+#“The elevated cancellation rate align with the start of the demand peaks/spikes
+```
+
+## Interpretation: peak usage hours for auto
+
+-   Demand follows a **predictable daily cycle**
+
+<!-- -->
+
+-   Two peaks: **late morning** and **stronger evening peak**
+
+<!-- -->
+
+-   Predictable timing enables **proactive driver supply planning**
+
+```{r}
+#“Auto ride demand follows a highly structured and predictable daily cycle.”
+
+#“Demand spikes occur at nearly the same hours every day.”
+
+#“This predictability creates an opportunity to proactively manage driver supply rather than reacting after problems emerge.”
+```
+
+## Visualization 4: Peak-hour comparison (weekday vs weekend)
+
+```{r}
+# 1) Auto rides by hour + weekday/weekend
+auto_hourly <- uber_data %>%
+  filter(`Vehicle Type` == "Auto") %>%
+  mutate(
+    hour = as.numeric(substr(Time, 1, 2)),
+    day_type = if_else(wday(as.Date(Date), week_start = 1) %in% 1:5, "Weekday", "Weekend")
+  ) %>%
+  count(day_type, hour, name = "n") %>%
+  arrange(day_type, hour)
+
+# 2) Helper: peak + low points computed from auto_hourly
+peak_points <- auto_hourly %>%
+  mutate(
+    window = case_when(
+      hour >= 8  & hour <= 12 ~ "Morning Peak",
+      hour >= 16 & hour <= 20 ~ "Evening Peak",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(window)) %>%
+  group_by(day_type, window) %>%
+  slice_max(n, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  transmute(
+    day_type, window,
+    x = hour, y = n,
+    label = paste0(day_type, " ", window, ":\n", format(n, big.mark=","), " rides at ", sprintf("%02d:00", hour))
+  )
+
+low_points <- auto_hourly %>%
+  filter(hour >= 10 & hour <= 16) %>%
+  group_by(day_type) %>%
+  slice_min(n, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  transmute(
+    day_type,
+    x = hour, y = n
+  )
+
+# 3) Offsets ONLY for evening-peak annotations
+peak_points_annot <- peak_points %>%
+  filter(window == "Evening Peak") %>%
+  mutate(
+    dx = if_else(day_type == "Weekday", 2.0, -2.0),
+    dy = if_else(day_type == "Weekday", 520, 520),  # same baseline
+    dy = if_else(day_type == "Weekend", dy + 600, dy), # nudge weekend up
+    hjust_label = if_else(dx > 0, 0, 1)
+  )
+
+# 4) Δ line data between evening peaks 
+eve_weekday <- peak_points_annot %>% filter(day_type == "Weekday") %>% slice(1)
+eve_weekend <- peak_points_annot %>% filter(day_type == "Weekend") %>% slice(1)
+
+diff_df <- tibble(
+  hour = eve_weekday$x,
+  y_min = min(eve_weekday$y, eve_weekend$y),
+  y_max = max(eve_weekday$y, eve_weekend$y),
+  label = paste0("Δ = ", format(abs(eve_weekday$y - eve_weekend$y), big.mark=","), " rides")
+)
+
+# 5) Plot
+ggplot(auto_hourly, aes(x = hour, y = n, color = day_type, fill = day_type)) +
+  geom_area(alpha = 0.25, position = "identity") +
+  geom_line(linewidth = 1.2) +
+
+  # Points 
+  geom_point(data = peak_points, aes(x = x, y = y, color = day_type), size = 5) +
+  geom_point(data = low_points,  aes(x = x, y = y, color = day_type), size = 5) +
+
+  # Dotted Δ line at evening peak hour
+  geom_segment(
+  data = diff_df,
+  inherit.aes = FALSE,
+  aes(x = hour, xend = hour, y = y_min, yend = y_max),
+  linetype = "dotted",
+  linewidth = 1,
+  color = "gray40"
+) +
+geom_label(
+  data = diff_df,
+  inherit.aes = FALSE,
+  aes(x = hour + 3.5, y = (y_min + y_max)/2, label = label),
+  fill = "white",
+  color = "gray20",
+  linewidth = 0.2,
+  size = 3.4,
+  fontface = "bold"
+) +
+
+
+  # Evening peak annotations only
+  geom_curve(
+    data = peak_points_annot,
+    aes(x = x + dx, y = y + dy, xend = x, yend = y, color = day_type),
+    curvature = 0.25,
+    arrow = arrow(length = unit(0.25, "cm")),
+    linewidth = 1
+  ) +
+  geom_text(
+    data = peak_points_annot,
+    aes(x = x + dx, y = y + dy, label = label, color = day_type, hjust = hjust_label),
+    fontface = "bold",
+    size = 3.3
+  ) +
+
+  coord_cartesian(clip = "off") +
+
+  scale_x_continuous(
+    breaks = seq(0, 23, 2),
+    labels = paste0(sprintf("%02d", seq(0, 23, 2)), ":00")
+  ) +
+  scale_fill_manual(values = c("Weekday" = "#0072B2", "Weekend" = "#E69F00")) +
+  scale_color_manual(values = c("Weekday" = "#0072B2", "Weekend" = "#E69F00")) +
+
+  labs(
+    title = "Peak Usage Hours for Auto Rides: Weekday vs Weekend",
+    subtitle = "Weekday and weekend demand follow similar shapes, but at a different scale",
+    x = "Hour of Day",
+    y = "Number of Auto Rides",
+    caption = "Data: Uber Ride Bookings, NCR India."
+  ) +
+
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 11, color = "gray30"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    legend.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.margin = margin(20, 30, 35, 30)
+  )
+
+
+```
+
+```{r}
+#“This visualization compares auto ride demand by hour of day for weekdays and weekends.”
+
+#“Both curves follow a similar shape, indicating consistent daily timing patterns.”
+
+#“However, weekday demand operates at a much higher scale.”
+
+#“The weekday evening peak reaches 2,207 rides at 6:00 PM, compared to 857 rides on weekends.”
+
+#“The dotted line highlights this gap of approximately 1,350 rides.”
+
+#“This makes weekday evenings the most demand-intensive period for auto rides.”
+```
+
+## Interpretation: Weekday vs Weekend Demand
+
+-   Peak-hour patterns are similar between weekdays and weekends
+
+-   Suggests operational levers should be **calendar-aware**
+
+-   Supports targeted policies rather than one-size-fits-all
+
+```{r}
+#“The main difference between weekdays and weekends is demand intensity, not timing.”
+
+#“Work-related commuting compresses weekday demand into narrow windows.”
+
+#“This concentration helps explain cancellation rate increases at the beginning of the rush hours.
+```
+
+## Visualization 5: High-Traffic Routes by Cancellation Rate
+
+```{r}
+# Calculate cancellation rates by route using Booking Status
+route_analysis <- uber_data %>%
+  filter(!is.na(`Pickup Location`), !is.na(`Drop Location`)) %>%
+  group_by(pickup = `Pickup Location`, drop = `Drop Location`) %>%
+  summarise(
+    total_rides = n(),
+    cancelled = sum(`Booking Status` %in% c("Cancelled by Customer", "Cancelled by Driver"), na.rm = TRUE),
+    cancellation_rate = (cancelled / total_rides) * 100,
+    .groups = "drop"
+  ) %>%
+  filter(total_rides >= 1,
+         cancellation_rate >= 5) %>%
+  arrange(desc(total_rides))
+
+# Get TOP 50 busiest routes
+problem_routes <- route_analysis %>%
+  slice_head(n = 50)
+
+
+# Calculate summary statistics for subtitle
+total_routes <- nrow(problem_routes)
+avg_cancel_rate <- mean(problem_routes$cancellation_rate)
+worst_route <- problem_routes %>% 
+  arrange(desc(cancellation_rate)) %>% 
+  slice(1)
+
+subtitle_text <- paste0(
+  "Analyzing ", total_routes, " high-traffic routes with ≥5% total cancellation rates | ",
+  "Average cancellation: ", round(avg_cancel_rate, 1), "% | ",
+  "Worst route: ", worst_route$pickup, " → ", worst_route$drop, 
+  " (", round(worst_route$cancellation_rate, 1), "%)"
+)
+
+# Create edges
+edges_data <- problem_routes %>%
+  rename(from = pickup, to = drop) %>%
+  mutate(
+    weight = cancellation_rate,
+    label = paste0(round(cancellation_rate, 1), "%")
+  )
+
+# Get unique locations
+all_locations <- unique(c(edges_data$from, edges_data$to))
+
+# Get dropoff and pickup counts
+dropoff_counts <- uber_data %>%
+  filter(!is.na(`Drop Location`)) %>%
+  count(`Drop Location`, name = "dropoff_total")
+
+pickup_counts <- uber_data %>%
+  filter(!is.na(`Pickup Location`)) %>%
+  count(`Pickup Location`, name = "pickup_total")
+
+# Create nodes
+nodes_data <- data.frame(
+  id = all_locations,
+  label = all_locations
+) %>%
+  left_join(dropoff_counts, by = c("id" = "Drop Location")) %>%
+  left_join(pickup_counts, by = c("id" = "Pickup Location")) %>%
+  mutate(
+    dropoff_total = replace_na(dropoff_total, 0),
+    pickup_total = replace_na(pickup_total, 0),
+    value = sqrt(dropoff_total) * 3,
+    color = "#3498db",
+    title = paste0("<b>", id, "</b><br>",
+                   "Drop-offs: ", dropoff_total, "<br>",
+                   "Pickups: ", pickup_total)
+  )
+
+# Calculate cancellations by type for each route
+cancel_summary <- uber_data %>%
+  filter(!is.na(`Pickup Location`), !is.na(`Drop Location`)) %>%
+  group_by(pickup = `Pickup Location`, drop = `Drop Location`) %>%
+  summarise(
+    total_rides = n(),
+    cancelled_by_customer = sum(`Booking Status` == "Cancelled by Customer", na.rm = TRUE),
+    cancelled_by_driver = sum(`Booking Status` == "Cancelled by Driver", na.rm = TRUE),
+    total_cancelled = cancelled_by_customer + cancelled_by_driver,
+    cancellation_rate = (total_cancelled / total_rides) * 100,
+    .groups = "drop"
+  )
+
+
+# Join without overwriting
+edges_data_enhanced <- problem_routes %>%
+  select(pickup, drop, total_rides, cancellation_rate) %>%
+  left_join(
+    cancel_summary %>% 
+      select(pickup, drop, cancelled_by_customer, cancelled_by_driver, total_cancelled, cancellation_rate),
+    by = c("pickup", "drop")
+  ) %>%
+  mutate(
+    # Ensure no NAs and compute dominant side
+    cancelled_by_customer = replace_na(cancelled_by_customer, 0),
+    cancelled_by_driver = replace_na(cancelled_by_driver, 0),
+    total_rides = replace_na(total_rides, 0),
+    
+    # Compute separate cancellation rates for each side
+    rate_customer = (cancelled_by_customer / total_rides) * 100,
+    rate_driver   = (cancelled_by_driver / total_rides) * 100,
+    
+    # Choose the higher rate to drive color
+    dominant_rate = pmax(rate_customer, rate_driver, na.rm = TRUE),
+    dominant_side = case_when(
+      rate_customer > rate_driver ~ "Customer-driven",
+      rate_driver > rate_customer ~ "Driver-driven",
+      TRUE ~ "Equal"
+    ),
+    
+    from = pickup,
+    to = drop,
+    label = paste0(round(dominant_rate, 1), "%"),
+    title = paste0(
+      "<b>Route:</b> ", from, " → ", to,
+      "<br><b>Total Rides:</b> ", total_rides,
+      "<br><b>Cancelled by Customer:</b> ", cancelled_by_customer,
+      "<br><b>Cancelled by Driver:</b> ", cancelled_by_driver,
+      "<br><b>Highest Cancellation Rate:</b> ", round(dominant_rate, 1), "%"
+    ),
+    
+    # Color based on dominant (higher) cancellation rate
+    color = case_when(
+      dominant_rate >= 40 ~ "#8B0000",  # critical
+      dominant_rate >= 30 ~ "#DC143C",  # severe
+      dominant_rate >= 20 ~ "#FF6347",  # high
+      dominant_rate >= 10 ~ "#FFA500",  # moderate
+      TRUE ~ "#39FF14"                  # acceptable
+    ),
+    
+    width = sqrt(total_rides) / 2
+  ) %>%
+  select(from, to, label, title, color, width, dominant_rate)
+
+# Create combined title with stats
+title_with_stats <- paste0(
+  "<div style='text-align:center;'>",
+  "<div style='font-size:20px; font-weight:bold; margin-bottom:8px;'>",
+  "Uber NCR Problem Routes: Cancellation Rate Analysis",
+  "</div>",
+  "<div style='font-size:13px; color:#555; font-weight:normal;'>",
+  "Analyzing ", total_routes, " high-traffic routes with ≥5% total cancellation rates | ",
+  "Avg cancellation: ", round(avg_cancel_rate, 1), "% | ",
+  "Worst: ", worst_route$pickup, " → ", worst_route$drop, 
+  " (", round(worst_route$cancellation_rate, 1), "%)",
+  "</div>",
+  "</div>"
+)
+
+# Create network
+visNetwork(nodes_data, edges_data_enhanced, height = "750px", width = "100%",
+           main = title_with_stats) %>%
+  visNodes(
+    shape = "dot",
+    color = list(background = "#3498db", border = "#2980b9"),
+    font = list(size = 13, color = "#000000", bold = TRUE),
+    borderWidth = 2
+  ) %>%
+  visEdges(
+    arrows = list(to = list(enabled = TRUE, scaleFactor = 0.5)),
+    smooth = list(type = "curvedCW", roundness = 0.2),
+    font = list(size = 12, color = "#000000", align = "middle")
+  ) %>%
+  visPhysics(
+    solver = "forceAtlas2Based",
+    forceAtlas2Based = list(gravitationalConstant = -50),
+    stabilization = list(iterations = 100)
+  ) %>%
+  visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE)) %>%
+  visInteraction(navigationButtons = TRUE)
+```
+
+```{r}
+#“This visualization shifts the analysis from time-based patterns to geographic risk.”
+
+#“Nodes represent locations, and edges represent high-traffic routes between them.”
+
+#“Only routes with at least five percent cancellation rates are included.”
+
+#“Node size reflects traffic(drop-off) volume, while edge color indicates cancellation severity.”
+
+#“The average cancellation rate across these routes is approximately 25.7 percent.”
+
+#“The most severe route exhibits a cancellation rate of 50 percent.”
+
+#“Cancellations cluster in specific corridors rather than occurring randomly.”
+```
+
+## Interpretation: Route-Level Risk
+
+-   High cancellation risk is **corridor-specific**
+
+<!-- -->
+
+-   High volume does not guarantee reliability
+
+<!-- -->
+
+-   Supports **route-specific interventions**
+
+<!-- -->
+
+-   Justifies **interactive drill-down**
+
+```{r}
+#“High cancellation rates are concentrated in a small number of corridors.”
+
+#“High volume alone does not guarantee reliability.”
+
+#“This supports route-specific interventions rather than city-wide policy changes.”
+
+#“This is where interactive exploration becomes necessary.”
+```
+
+## Visualization 6: Shiny Interactive Tool
+
+**Demo goal:** show how anyone can explore:
+
+-   Differences in Vehicle Type
+
+-   Cancellations by Driver or Customer only
+
+-   Filter by minimum Cancellation rate
+
+```{r}
+#“This slide demonstrates the Shiny application that turns the network into a decision-support tool.”
+
+#“The cancellation-rate threshold allows people to focus on the most severe routes.”
+
+#“Filtering by cancellation type separates driver-driven from customer-driven failures.”
+
+#“This distinction helps diagnose whether issues stem from supply constraints or rider experience.”
+
+#“Hover details provide route-level metrics that support targeted intervention.”
+
+#“The app enables precise prioritization rather than broad, inefficient responses.”
+```
+
+## Key takeaways
+
+-   **Pricing efficiency:** short rides are costlier per km and less predictable
+
+-   **Reliability:** cancellations fluctuate modestly but follow predictable timing
+
+-   **Decision support:** interactive tools enable fast drill-down for operations
+
+```{r}
+#“Short trips are disproportionately more expensive per kilometer.”
+
+#“Cancellations are stable overall with predictable stress windows.”
+
+#“Route failures tend to cluster, making targeted intervention feasible.”
+```
+
+## Next steps
+
+-   Model cancellation probability using hour + distance + other features
+
+-   Add geography (pickup/drop) to locate repeated problem corridors
+
+-   Improve measurement of surge / dynamic pricing if available
+
+```{r}
+#“Future work could incorporate driver supply data to directly measure supply–demand gaps.”
+
+#like Modeling cancellation probability using some of the key variables like hour or distance
+
+#“Time- and route-specific incentive pilots could be tested on the highest-risk corridors.
+
+#5am and 2pm are some potential candidates.
+
+#“Short-trip pricing experiments could evaluate whether reduced base fares improve efficiency and reliability.”
+
+#“More formal evaluation methods could be used to quantify the impact of these targeted interventions in the future
+```
+
+## Thank you
